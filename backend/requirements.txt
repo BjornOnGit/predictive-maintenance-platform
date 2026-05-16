@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+pydantic[email]
+python-jose
+passlib[argon2]
+scikit-learn
+pandas
+numpy
+apscheduler
+python-dotenv
+requests

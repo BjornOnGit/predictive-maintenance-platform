@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  # Backend API (uses Neon cloud database)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: predictive-backend
+    environment:
+      DATABASE_URL: postgresql://neondb_owner:npg_KEBjo2XstbQ0@ep-twilight-morning-aladel80-pooler.c-3.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+      SECRET_KEY: ${SECRET_KEY:-q3p7-Hq4popEOcIukaozhtj3YQOEoJc0nBhN4QAVzS0}
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 30
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-q", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - predictive-net
+    restart: unless-stopped
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: predictive-frontend
+    environment:
+      VITE_API_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - predictive-net
+    restart: unless-stopped
+
+networks:
+  predictive-net:
+    driver: bridge
+
+
