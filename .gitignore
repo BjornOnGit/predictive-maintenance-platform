@@ -2,3 +2,4 @@ architecture.md
 tasks.md
 venv/
 .env*
+!.env.example
