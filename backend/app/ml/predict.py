@@ -1,6 +1,7 @@
 import pickle
 import os
 from typing import Dict, Optional
+import pandas as pd
 
 # Paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -48,7 +49,10 @@ def predict(
     model = load_model()
     
     # Prepare features in order: vibration, temperature, pressure, runtime_hours
-    features = [[vibration, temperature, pressure, runtime_hours]]
+    features = pd.DataFrame(
+        [[vibration, temperature, pressure, runtime_hours]],
+        columns=["vibration", "temperature", "pressure", "runtime_hours"],
+    )
     
     # Get probability
     probability = model.predict_proba(features)[0][1]  # Probability of class 1 (failure)

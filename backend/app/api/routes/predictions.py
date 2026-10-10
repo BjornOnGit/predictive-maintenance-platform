@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from uuid import UUID
 from app.core.database import get_db
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_engineer
 from app.models.user import User
 from app.models.asset import Asset
 from app.models.prediction import Prediction
@@ -53,7 +53,7 @@ def get_prediction(
 def recalculate_prediction(
     asset_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_engineer)
 ):
     """Force recalculation of prediction for asset"""
     

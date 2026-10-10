@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -14,6 +14,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app ./app
+
+COPY alembic.ini ./
+COPY alembic ./alembic
+
+RUN python -m app.ml.train
 
 # Create non-root user (use higher UID to avoid conflicts)
 RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app

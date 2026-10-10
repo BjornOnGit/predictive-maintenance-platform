@@ -1,44 +1,41 @@
 """
-APScheduler background job scheduler for recurring maintenance tasks.
+Recurring jobs. Runs as its own process (python -m app.core.scheduler),
+separate from the API, so there is exactly one scheduler no matter how many
+API workers run.
 
-Handles:
-- Recalculate predictions every 5 minutes
-- Scan for overdue maintenance
-- Generate alerts for maintenance due
+- Every 5 minutes: queue one prediction job per asset (the worker computes them)
+- Every 5 minutes: scan for overdue maintenance
 """
 
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy.orm import Session
-from app.core.database import SessionLocal
-from app.services.prediction_service import save_prediction
-from app.models.asset import Asset
-from app.core.logging import logger
 
-scheduler = BackgroundScheduler()
+from app import models  # noqa: F401  (registers all models with SQLAlchemy)
+from app.core.database import SessionLocal
+from app.core.logging import logger
+from app.core.queue import enqueue_prediction
+from app.models.asset import Asset
+
+scheduler = BlockingScheduler()
 
 
 def recalculate_all_predictions():
-    """
-    Recalculate predictions for all assets.
-    Called every 5 minutes.
-    """
+    """Queue one prediction job per asset. Called every 5 minutes."""
+    db = SessionLocal()
     try:
-        db = SessionLocal()
-        assets = db.query(Asset).all()
-        
-        count = 0
-        for asset in assets:
-            try:
-                save_prediction(db, asset.id)
-                count += 1
-            except Exception as e:
-                logger.warning(f"Failed to recalculate prediction for asset {asset.id}: {e}")
-        
-        logger.info(f"✓ Recalculated predictions for {count} assets")
+        asset_ids = [row.id for row in db.query(Asset.id).all()]
+    finally:
         db.close()
-    except Exception as e:
-        logger.error(f"Error in recalculate_all_predictions: {e}")
+
+    queued = 0
+    for asset_id in asset_ids:
+        try:
+            enqueue_prediction(asset_id)
+            queued += 1
+        except Exception as e:
+            logger.warning(f"Failed to queue prediction for asset {asset_id}: {e}")
+
+    logger.info(f"✓ Queued predictions for {queued} assets")
 
 
 def scan_maintenance_overdue():
@@ -56,41 +53,24 @@ def scan_maintenance_overdue():
 
 
 def start_scheduler():
-    """Start the background scheduler."""
-    if scheduler.running:
-        logger.info("Scheduler already running")
-        return
-    
-    try:
-        # Schedule prediction recalculation every 5 minutes
-        scheduler.add_job(
-            recalculate_all_predictions,
-            trigger=IntervalTrigger(minutes=5),
-            id="recalculate_predictions",
-            name="Recalculate predictions for all assets",
-            replace_existing=True
-        )
-        
-        # Schedule maintenance scan every 5 minutes
-        scheduler.add_job(
-            scan_maintenance_overdue,
-            trigger=IntervalTrigger(minutes=5),
-            id="scan_maintenance",
-            name="Scan for overdue maintenance",
-            replace_existing=True
-        )
-        
-        scheduler.start()
-        logger.info("✓ Background scheduler started")
-    except Exception as e:
-        logger.error(f"Failed to start scheduler: {e}")
+    """Register the jobs and run the scheduler (blocks)."""
+    scheduler.add_job(
+        recalculate_all_predictions,
+        trigger=IntervalTrigger(minutes=5),
+        id="recalculate_predictions",
+        name="Queue predictions for all assets",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        scan_maintenance_overdue,
+        trigger=IntervalTrigger(minutes=5),
+        id="scan_maintenance",
+        name="Scan for overdue maintenance",
+        replace_existing=True,
+    )
+    logger.info("✓ Scheduler started")
+    scheduler.start()
 
 
-def stop_scheduler():
-    """Stop the background scheduler."""
-    try:
-        if scheduler.running:
-            scheduler.shutdown()
-            logger.info("✓ Scheduler stopped")
-    except Exception as e:
-        logger.error(f"Error stopping scheduler: {e}")
+if __name__ == "__main__":
+    start_scheduler()

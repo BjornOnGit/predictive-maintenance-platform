@@ -58,14 +58,14 @@ def export_maintenance_csv(
     if asset_id:
         query = query.filter(MaintenanceLog.asset_id == asset_id)
     
-    logs = query.order_by(desc(MaintenanceLog.performed_at)).all()
+    logs = query.order_by(desc(MaintenanceLog.date)).all()
     
     # Create CSV in memory
     output = io.StringIO()
     writer = csv.writer(output)
     
     # Write header
-    writer.writerow(["Log ID", "Asset ID", "Action", "Technician", "Performed At", "Downtime Hours", "Cost", "Notes"])
+    writer.writerow(["Log ID", "Asset ID", "Action", "Technician", "Performed At", "Downtime Hours", "Cost"])
     
     # Write data
     for log in logs:
@@ -74,10 +74,9 @@ def export_maintenance_csv(
             str(log.asset_id),
             log.action,
             log.technician,
-            log.performed_at.isoformat(),
-            log.downtime_hours,
-            log.cost,
-            log.notes or ""
+            log.date.isoformat(),
+            log.downtime,
+            log.cost
         ])
     
     csv_content = output.getvalue()

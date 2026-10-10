@@ -84,23 +84,22 @@ def get_asset_maintenance_summary(asset_id: str, db: Session = Depends(get_db), 
     
     logs = db.query(MaintenanceLog).filter(
         MaintenanceLog.asset_id == asset_id
-    ).order_by(desc(MaintenanceLog.performed_at)).all()
+    ).order_by(desc(MaintenanceLog.date)).all()
     
     summary = {
         "asset_id": str(asset.id),
         "asset_name": asset.name,
         "total_maintenance_records": len(logs),
-        "total_downtime_hours": sum(log.downtime_hours for log in logs),
-        "total_maintenance_cost": sum(log.cost for log in logs),
+        "total_downtime_hours": sum(log.downtime or 0 for log in logs),
+        "total_maintenance_cost": sum(log.cost or 0 for log in logs),
         "maintenance_history": [
             {
                 "id": log.id,
                 "action": log.action,
                 "technician": log.technician,
-                "performed_at": log.performed_at.isoformat(),
-                "downtime_hours": log.downtime_hours,
-                "cost": log.cost,
-                "notes": log.notes
+                "performed_at": log.date.isoformat(),
+                "downtime_hours": log.downtime,
+                "cost": log.cost
             }
             for log in logs
         ]
@@ -167,8 +166,7 @@ def get_predictions_summary(db: Session = Depends(get_db), current_user = Depend
         "risk_distribution": {
             "low": sum(1 for p in predictions if p.risk_level == "Low"),
             "medium": sum(1 for p in predictions if p.risk_level == "Medium"),
-            "high": sum(1 for p in predictions if p.risk_level == "High"),
-            "critical": sum(1 for p in predictions if p.risk_level == "Critical")
+            "high": sum(1 for p in predictions if p.risk_level == "High")
         },
         "health_distribution": {
             "excellent": sum(1 for p in predictions if p.health_score >= 80),

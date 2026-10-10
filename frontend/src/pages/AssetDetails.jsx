@@ -1,210 +1,321 @@
-import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import client from '../api/client';
-import './AssetDetails.css';
+import { useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Activity, ArrowLeft, ChevronRight, Gauge, HeartPulse, RefreshCw, TriangleAlert, Wrench } from 'lucide-react';
+import client from '@/api/client';
+import { parseApiDate, severityStyle, timeAgo } from '@/lib/time';
+import AlertDetailSheet from '@/components/AlertDetailSheet';
+import RecordDialog from '@/components/RecordDialog';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+
+const RISK_COLORS = { Low: '#10b981', Medium: '#f59e0b', High: '#ef4444' };
+const METRICS = [
+  { key: 'vibration', label: 'Vibration', color: '#8b5cf6' },
+  { key: 'temperature', label: 'Temperature', color: '#ef4444' },
+  { key: 'pressure', label: 'Pressure', color: '#0ea5e9' },
+  { key: 'rpm', label: 'RPM', color: '#10b981' },
+];
+const SENSOR_FIELDS = [
+  { key: 'vibration', label: 'Vibration', type: 'number' },
+  { key: 'temperature', label: 'Temperature', type: 'number' },
+  { key: 'pressure', label: 'Pressure', type: 'number' },
+  { key: 'runtime_hours', label: 'Runtime hours', type: 'number' },
+  { key: 'rpm', label: 'RPM', type: 'number' },
+];
+const MAINTENANCE_FIELDS = [
+  { key: 'action', label: 'Action performed', type: 'text', required: true },
+  { key: 'technician', label: 'Technician', type: 'text' },
+  { key: 'cost', label: 'Cost', type: 'number' },
+  { key: 'downtime', label: 'Downtime (hours)', type: 'number' },
+];
+const tooltipStyle = {
+  background: 'var(--popover)',
+  color: 'var(--popover-foreground)',
+  border: '1px solid var(--border)',
+  borderRadius: 8,
+  fontSize: 12,
+};
+
+function Stat({ title, value, icon: Icon, tone, color }) {
+  return (
+    <Card>
+      <CardContent className="flex items-center justify-between">
+        <div>
+          <p className="text-sm text-muted-foreground">{title}</p>
+          <p className="text-3xl font-bold tracking-tight" style={color ? { color } : undefined}>{value}</p>
+        </div>
+        <div className={`rounded-lg p-2.5 ${tone}`}><Icon className="size-5" /></div>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function AssetDetails() {
   const { assetId } = useParams();
   const navigate = useNavigate();
   const [asset, setAsset] = useState(null);
   const [prediction, setPrediction] = useState(null);
-  const [sensorHistory, setSensorHistory] = useState([]);
-  const [maintenanceHistory, setMaintenanceHistory] = useState([]);
+  const [readings, setReadings] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [recommendation, setRecommendation] = useState(null);
+  const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [metric, setMetric] = useState('vibration');
+  const [recalculating, setRecalculating] = useState(false);
+  const [selected, setSelected] = useState(null);
 
-  useEffect(() => {
-    fetchAssetData();
-  }, [assetId]);
-
-  const fetchAssetData = async () => {
+  const load = async () => {
     try {
-      const [assetRes, predRes, sensorRes, maintRes] = await Promise.all([
+      const [a, p, s, m, r, al] = await Promise.all([
         client.get(`/assets/${assetId}`),
         client.get(`/predictions/${assetId}`).catch(() => null),
-        client.get(`/sensors/history/${assetId}`),
-        client.get(`/maintenance/log/${assetId}`).catch(() => null),
+        client.get(`/sensors/history/${assetId}`).catch(() => ({ data: [] })),
+        client.get(`/maintenance/log/${assetId}`).catch(() => ({ data: [] })),
+        client.get(`/maintenance/recommendation/${assetId}`).catch(() => null),
+        client.get('/alerts', { params: { asset_id: assetId } }).catch(() => ({ data: [] })),
       ]);
-
-      setAsset(assetRes.data);
-      if (predRes?.data) setPrediction(predRes.data);
-      
-      // Prepare chart data (last 10 readings in chronological order)
-      const readings = sensorRes.data.slice().reverse();
-      setSensorHistory(readings);
-      
-      if (maintRes?.data) setMaintenanceHistory(maintRes.data);
-      
-      setError(null);
-    } catch (err) {
-      setError('Failed to fetch asset details');
-      console.error(err);
+      setAsset(a.data);
+      setPrediction(p?.data || null);
+      setReadings(
+        s.data.slice().reverse().map((r) => ({
+          ...r,
+          time: parseApiDate(r.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        }))
+      );
+      setLogs(m.data);
+      setRecommendation(r?.data || null);
+      setAlerts(al.data);
+      setError('');
+    } catch {
+      setError('Failed to load this equipment.');
     } finally {
       setLoading(false);
     }
   };
 
-  if (loading) {
-    return <div className="asset-details"><p>Loading asset details...</p></div>;
-  }
+  useEffect(() => {
+    load();
+  }, [assetId]);
 
-  if (error || !asset) {
+  const recalculate = async () => {
+    setRecalculating(true);
+    setNotice('');
+    try {
+      const res = await client.post(`/predictions/${assetId}/recalculate`);
+      setPrediction(res.data);
+    } catch (err) {
+      setNotice(err.response?.status === 403 ? 'Only engineers and admins can recalculate.' : 'Recalculation failed.');
+    } finally {
+      setRecalculating(false);
+    }
+  };
+
+  const submitSensor = async (payload) => {
+    await client.post('/sensors/data', { asset_id: assetId, ...payload });
+    setNotice('Reading saved. The prediction updates in a few seconds.');
+    load();
+    setTimeout(load, 5000);
+  };
+
+  const submitMaintenance = async (payload) => {
+    await client.post('/maintenance/log', { asset_id: assetId, ...payload });
+    load();
+  };
+
+  if (loading) {
     return (
-      <div className="asset-details">
-        <button onClick={() => navigate('/assets')} className="btn-secondary">
-          Back to Assets
-        </button>
-        <p>{error || 'Asset not found'}</p>
+      <div className="space-y-6 p-6">
+        <Skeleton className="h-10 w-64" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24" />)}</div>
+        <Skeleton className="h-72" />
       </div>
     );
   }
 
-  const getRiskColor = (riskLevel) => {
-    switch (riskLevel) {
-      case 'Low':
-        return '#28a745';
-      case 'Medium':
-        return '#ffc107';
-      case 'High':
-        return '#dc3545';
-      default:
-        return '#6c757d';
-    }
-  };
+  if (error || !asset) {
+    return (
+      <div className="space-y-4 p-6">
+        <Button variant="outline" onClick={() => navigate('/assets')}><ArrowLeft /> Back to equipment</Button>
+        <p className="text-sm text-destructive">{error || 'Equipment not found.'}</p>
+      </div>
+    );
+  }
+
+  const active = METRICS.find((m) => m.key === metric);
+  const risk = prediction?.risk_level;
 
   return (
-    <div className="asset-details">
-      <div className="details-header">
-        <button onClick={() => navigate('/assets')} className="btn-secondary">
-          ← Back to Assets
-        </button>
-        <h1>{asset.name}</h1>
-      </div>
-
-      {/* Asset Info Card */}
-      <div className="info-grid">
-        <div className="card">
-          <h3>Equipment Details</h3>
-          <p><strong>Type:</strong> {asset.type}</p>
-          <p><strong>Facility:</strong> {asset.facility}</p>
-          <p><strong>Manufacturer:</strong> {asset.manufacturer || 'N/A'}</p>
-          <p>
-            <strong>Status:</strong>{' '}
-            <span className={`status-badge ${asset.status}`}>{asset.status}</span>
+    <div className="space-y-6 p-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="space-y-1">
+          <Button variant="ghost" size="sm" className="-ml-2" onClick={() => navigate('/assets')}>
+            <ArrowLeft /> Equipment
+          </Button>
+          <h1 className="text-2xl font-semibold tracking-tight">{asset.name}</h1>
+          <p className="text-sm text-muted-foreground">
+            {[asset.type, asset.facility, asset.manufacturer].filter(Boolean).join(' · ')}
           </p>
-          <p><strong>Install Date:</strong> {new Date(asset.install_date || asset.created_at).toLocaleDateString()}</p>
         </div>
-
-        {prediction && (
-          <div className="card">
-            <h3>Health Assessment</h3>
-            <div className="health-score">
-              <div className={`score-circle ${prediction.health_score >= 80 ? 'excellent' : prediction.health_score >= 60 ? 'good' : prediction.health_score >= 40 ? 'fair' : 'poor'}`}>
-                <span className="score">{Math.round(prediction.health_score)}</span>
-              </div>
-              <p className="health-status">
-                {prediction.health_score >= 80 ? 'Excellent' : 
-                 prediction.health_score >= 60 ? 'Good' : 
-                 prediction.health_score >= 40 ? 'Fair' : 
-                 'Poor'}
-              </p>
-            </div>
-            <p style={{ marginTop: '12px' }}>
-              <strong>Failure Risk:</strong>{' '}
-              <span 
-                style={{ 
-                  color: getRiskColor(prediction.risk_level),
-                  fontWeight: 'bold'
-                }}
-              >
-                {prediction.risk_level}
-              </span>
-            </p>
-            <p>
-              <strong>Failure Probability:</strong> {(prediction.failure_probability * 100).toFixed(1)}%
-            </p>
-            <p style={{ fontSize: '12px', color: '#999' }}>
-              Last updated: {new Date(prediction.updated_at).toLocaleString()}
-            </p>
-          </div>
-        )}
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={recalculate} disabled={recalculating}>
+            <RefreshCw className={recalculating ? 'animate-spin' : ''} /> Recalculate
+          </Button>
+          <RecordDialog
+            variant="outline"
+            title="Log sensor reading"
+            description="Send a manual reading. Leave out any sensor you don't have."
+            triggerLabel="Log reading"
+            icon={Gauge}
+            fields={SENSOR_FIELDS}
+            onSubmit={submitSensor}
+          />
+          <RecordDialog
+            title="Log maintenance"
+            description="Record work performed on this equipment."
+            triggerLabel="Log maintenance"
+            icon={Wrench}
+            fields={MAINTENANCE_FIELDS}
+            onSubmit={submitMaintenance}
+          />
+        </div>
       </div>
 
-      {/* Charts */}
-      {sensorHistory.length > 0 && (
-        <div className="charts-grid">
-          <div className="card chart-card">
-            <h3>Vibration Trend (mm/s)</h3>
-            <ResponsiveContainer width="100%" height={250}>
-              <LineChart data={sensorHistory}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="id" />
-                <YAxis />
-                <Tooltip />
-                <Line 
-                  type="monotone" 
-                  dataKey="vibration" 
-                  stroke="#ff7300" 
-                  strokeWidth={2}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+      {notice && <p className="text-sm text-muted-foreground">{notice}</p>}
 
-          <div className="card chart-card">
-            <h3>Temperature Trend (°C)</h3>
-            <ResponsiveContainer width="100%" height={250}>
-              <LineChart data={sensorHistory}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="id" />
-                <YAxis />
-                <Tooltip />
-                <Line 
-                  type="monotone" 
-                  dataKey="temperature" 
-                  stroke="#dc3545" 
-                  strokeWidth={2}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat title="Health score" value={prediction ? `${Math.round(prediction.health_score)}%` : '—'} icon={HeartPulse} tone="bg-emerald-500/10 text-emerald-600" />
+        <Stat title="Failure probability" value={prediction ? `${Math.round(prediction.failure_probability * 100)}%` : '—'} icon={Activity} tone="bg-sky-500/10 text-sky-600" />
+        <Stat title="Risk level" value={risk || '—'} icon={TriangleAlert} tone="bg-amber-500/10 text-amber-600" color={RISK_COLORS[risk]} />
+        <Stat title="Maintenance priority" value={recommendation ? recommendation.priority : '—'} icon={Wrench} tone="bg-violet-500/10 text-violet-600" />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Sensor history</CardTitle>
+            <CardDescription>Most recent readings, oldest to newest</CardDescription>
+            <div className="flex flex-wrap gap-2 pt-2">
+              {METRICS.map((m) => (
+                <Button key={m.key} size="sm" variant={metric === m.key ? 'default' : 'outline'} onClick={() => setMetric(m.key)}>
+                  {m.label}
+                </Button>
+              ))}
+            </div>
+          </CardHeader>
+          <CardContent>
+            {readings.length === 0 ? (
+              <p className="py-12 text-center text-sm text-muted-foreground">No readings yet. Use “Log reading” to add one.</p>
+            ) : (
+              <ResponsiveContainer width="100%" height={260}>
+                <LineChart data={readings}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis dataKey="time" tick={{ fontSize: 12 }} stroke="var(--muted-foreground)" />
+                  <YAxis tick={{ fontSize: 12 }} stroke="var(--muted-foreground)" width={40} />
+                  <Tooltip contentStyle={tooltipStyle} />
+                  <Line type="monotone" dataKey={active.key} name={active.label} stroke={active.color} strokeWidth={2} dot={false} connectNulls />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Recommendations</CardTitle>
+            <CardDescription>Suggested next steps</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {!recommendation || recommendation.recommendations.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No recommendations right now.</p>
+            ) : (
+              <>
+                <Badge variant="outline" className={`mb-3 capitalize ${severityStyle(recommendation.priority)}`}>
+                  {recommendation.priority} priority
+                </Badge>
+                <ul className="list-disc space-y-2 pl-5 text-sm">
+                  {recommendation.recommendations.map((r, i) => <li key={i}>{r}</li>)}
+                </ul>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {alerts.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Open alerts</CardTitle>
+            <CardDescription>Select an alert for details</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul className="divide-y">
+              {alerts.map((alert) => (
+                <li key={alert.id}>
+                  <button type="button" onClick={() => setSelected(alert)} className="flex w-full items-center gap-3 rounded-md px-2 py-3 text-left transition-colors hover:bg-muted/60">
+                    <TriangleAlert className={`size-4 shrink-0 ${severityStyle(alert.severity).split(' ')[1]}`} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium capitalize">{alert.type}</p>
+                      <p className="truncate text-xs text-muted-foreground">{alert.message}</p>
+                    </div>
+                    <Badge variant="outline" className={`capitalize ${severityStyle(alert.severity)}`}>{alert.severity}</Badge>
+                    <span className="hidden text-xs text-muted-foreground sm:block">{timeAgo(alert.created_at)}</span>
+                    <ChevronRight className="size-4 text-muted-foreground" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
       )}
 
-      {/* Maintenance History */}
-      {maintenanceHistory.length > 0 && (
-        <div className="card">
-          <h3>Maintenance History</h3>
-          <div className="maintenance-list">
-            {maintenanceHistory.map((log) => (
-              <div key={log.id} className="maintenance-item">
-                <div className="maintenance-header">
-                  <strong>{log.action}</strong>
-                  <span className="maintenance-date">
-                    {new Date(log.date).toLocaleDateString()}
-                  </span>
-                </div>
-                {log.technician && (
-                  <p><strong>Technician:</strong> {log.technician}</p>
-                )}
-                {log.cost && (
-                  <p><strong>Cost:</strong> ${log.cost.toFixed(2)}</p>
-                )}
-                {log.downtime && (
-                  <p><strong>Downtime:</strong> {log.downtime.toFixed(1)} hours</p>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <Card className="overflow-hidden">
+        <CardHeader>
+          <CardTitle>Maintenance history</CardTitle>
+          <CardDescription>{logs.length} {logs.length === 1 ? 'entry' : 'entries'}</CardDescription>
+        </CardHeader>
+        <CardContent className="px-0">
+          {logs.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">No maintenance recorded yet.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="pl-6">Date</TableHead>
+                  <TableHead>Action</TableHead>
+                  <TableHead>Technician</TableHead>
+                  <TableHead>Cost</TableHead>
+                  <TableHead className="pr-6">Downtime</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {logs.map((log) => (
+                  <TableRow key={log.id}>
+                    <TableCell className="pl-6">{parseApiDate(log.date).toLocaleDateString()}</TableCell>
+                    <TableCell className="font-medium">{log.action}</TableCell>
+                    <TableCell>{log.technician || '—'}</TableCell>
+                    <TableCell>{log.cost ?? '—'}</TableCell>
+                    <TableCell className="pr-6">{log.downtime != null ? `${log.downtime}h` : '—'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
-      {maintenanceHistory.length === 0 && (
-        <div className="card">
-          <p>No maintenance records found.</p>
-        </div>
-      )}
+      <AlertDetailSheet
+        alert={selected}
+        assetName={asset.name}
+        open={!!selected}
+        onOpenChange={(o) => !o && setSelected(null)}
+        onAcknowledged={(id) => setAlerts((prev) => prev.filter((a) => a.id !== id))}
+      />
     </div>
   );
 }

@@ -1,14 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from uuid import UUID
-
+from app.core.logging import logger
 from app.core.database import get_db
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_engineer
 from app.models.user import User
 from app.models.asset import Asset
 from app.models.sensor import SensorReading
 from app.schemas.sensor import SensorInput, SensorReadingResponse
-from app.services.prediction_service import save_prediction
+from app.core.queue import enqueue_prediction
 
 router = APIRouter(prefix="/sensors", tags=["sensors"])
 
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/sensors", tags=["sensors"])
 def post_sensor_data(
     sensor_data: SensorInput,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_engineer)
 ):
     # Verify asset exists
     asset = db.query(Asset).filter(Asset.id == sensor_data.asset_id).first()
@@ -33,13 +33,11 @@ def post_sensor_data(
     db.commit()
     db.refresh(reading)
     
-    # Trigger prediction update
+    # Queue prediction update (worker computes it; never fail the sensor post)
     try:
-        save_prediction(db, sensor_data.asset_id)
+        enqueue_prediction(sensor_data.asset_id)
     except Exception as e:
-        # Log but don't fail sensor post
-        from app.core.logging import logger
-        logger.warning(f"Failed to update prediction for asset {sensor_data.asset_id}: {e}")
+        logger.warning(f"Failed to queue prediction for asset {sensor_data.asset_id}: {e}")
     
     return reading
 

@@ -1,59 +1,56 @@
-import pandas as pd
-import pickle
+import json
 import os
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, accuracy_score
+import pickle
 
-# Paths
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
+from sklearn.model_selection import train_test_split
+
+from app.ml.generate_data import generate_dataset
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CSV_PATH = os.path.join(SCRIPT_DIR, "training_data.csv")
-MODEL_PATH = os.path.join(SCRIPT_DIR, "models", "failure_model.pkl")
+MODEL_DIR = os.path.join(SCRIPT_DIR, "models")
+MODEL_PATH = os.path.join(MODEL_DIR, "failure_model.pkl")
+METRICS_PATH = os.path.join(MODEL_DIR, "metrics.json")
+FEATURES = ["vibration", "temperature", "pressure", "runtime_hours"]
 
 
 def train_failure_model():
-    """Train RandomForestClassifier on historical data"""
-    
-    print("Loading training data...")
-    df = pd.read_csv(CSV_PATH)
-    print(f"✓ Loaded {len(df)} samples")
-    
-    # Features and target
-    X = df[["vibration", "temperature", "pressure", "runtime_hours"]]
-    y = df["failed"]
-    
-    print(f"  Features: {list(X.columns)}")
-    print(f"  Target: {list(y.unique())}")
-    
-    # Train/test split
+    """Train RandomForestClassifier on the synthetic dataset; save model and metrics"""
+    df = generate_dataset()
+    X, y = df[FEATURES], df["failed"]
+
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
+        X, y, test_size=0.2, random_state=42, stratify=y
     )
-    
-    # Train model
-    print("\nTraining RandomForestClassifier...")
+
     model = RandomForestClassifier(
         n_estimators=100,
         max_depth=10,
         random_state=42,
-        n_jobs=-1
+        n_jobs=-1,
+        class_weight="balanced",
     )
     model.fit(X_train, y_train)
-    print("✓ Training complete")
-    
-    # Evaluate
-    y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-    print(f"\nAccuracy: {accuracy:.2%}")
-    print("\nClassification Report:")
-    print(classification_report(y_test, y_pred, target_names=["Normal", "Failure"]))
-    
-    # Save model
-    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+
+    proba = model.predict_proba(X_test)[:, 1]
+    y_pred = (proba >= 0.5).astype(int)
+    metrics = {
+        "samples": len(df),
+        "failure_rate": round(float(y.mean()), 4),
+        "accuracy": round(float(accuracy_score(y_test, y_pred)), 4),
+        "precision": round(float(precision_score(y_test, y_pred)), 4),
+        "recall": round(float(recall_score(y_test, y_pred)), 4),
+        "roc_auc": round(float(roc_auc_score(y_test, proba)), 4),
+    }
+
+    os.makedirs(MODEL_DIR, exist_ok=True)
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(model, f)
-    print(f"✓ Model saved to {MODEL_PATH}")
-    
+    with open(METRICS_PATH, "w") as f:
+        json.dump(metrics, f, indent=2)
+
+    print(json.dumps(metrics, indent=2))
     return model
 
 

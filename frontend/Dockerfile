@@ -4,7 +4,8 @@ WORKDIR /app
 
 # Install dependencies
 COPY package*.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000 --fetch-timeout=300000
 
 # Copy source
 COPY src ./src
@@ -15,25 +16,14 @@ COPY index.html vite.config.js .env* ./
 RUN npm run build
 
 # Production stage
-FROM node:20-alpine
+FROM nginxinc/nginx-unprivileged:alpine
 
-WORKDIR /app
-
-# Install serve
-RUN npm install -g serve
-
-# Create non-root user (use higher UID to avoid conflicts)
-RUN addgroup -g 1001 appuser && adduser -D -u 1001 -G appuser appuser
-
-# Copy built app from builder
-COPY --from=builder --chown=1001:1001 /app/dist ./dist
-
-USER appuser
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /app/dist /usr/share/nginx/html
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget -q -O- http://localhost:3000 || exit 1
+    CMD wget -q -O- http://127.0.0.1:3000 || exit 1
 
 EXPOSE 3000
-CMD ["serve", "-s", "dist", "-l", "3000"]
 
