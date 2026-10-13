@@ -1,0 +1,5 @@
+# TLS certificates are issued and renewed automatically by Caddy (Let's Encrypt).
+{$DOMAIN} {
+    encode gzip
+    reverse_proxy frontend:3000
+}

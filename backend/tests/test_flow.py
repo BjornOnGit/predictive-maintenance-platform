@@ -26,3 +26,17 @@ def test_maintenance_log_feeds_summary_and_csv(client, engineer):
     export = client.get("/reporting/maintenance/export-csv", headers=engineer)
     assert export.status_code == 200, export.text
     assert "overheating" in export.json()["data"]
+
+def test_acknowledged_alert_is_not_recreated_immediately(client, engineer):
+    asset_id = make_asset(client, engineer)
+    hot = {"asset_id": asset_id, "vibration": 9.0, "temperature": 90, "pressure": 6.5, "runtime_hours": 7500}
+    client.post("/sensors/data", json=hot, headers=engineer)
+    client.post(f"/predictions/{asset_id}/recalculate", headers=engineer)
+
+    alerts = client.get("/alerts", params={"asset_id": asset_id}, headers=engineer).json()
+    assert alerts
+    for a in alerts:
+        assert client.patch(f"/alerts/{a['id']}/acknowledge", headers=engineer).status_code == 200
+
+    client.post(f"/predictions/{asset_id}/recalculate", headers=engineer)
+    assert client.get("/alerts", params={"asset_id": asset_id}, headers=engineer).json() == []

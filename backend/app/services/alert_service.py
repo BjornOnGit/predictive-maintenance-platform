@@ -8,7 +8,7 @@ Prevents duplicate active alerts for the same asset/type combination.
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 from app.models.alert import Alert
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 ALERT_THRESHOLDS = {
@@ -16,6 +16,8 @@ ALERT_THRESHOLDS = {
     "temperature": 85.0,  # Celsius
 }
 
+# After an alert is acknowledged, don't raise the same alert again for this long
+ALERT_COOLDOWN = timedelta(hours=1)
 
 def check_and_create_alerts(
     db: Session,
@@ -82,16 +84,17 @@ def _create_alert_if_needed(
     Returns created alert or None if duplicate prevented.
     """
     
-    # Check for active alert
-    active_alert = db.query(Alert).filter(
+    # Skip if an alert of this type is still open, or was acknowledged recently
+    cooldown_start = datetime.utcnow() - ALERT_COOLDOWN
+    existing = db.query(Alert).filter(
         and_(
             Alert.asset_id == asset_id,
             Alert.type == type_,
-            Alert.acknowledged == False
+            or_(Alert.acknowledged == False, Alert.acknowledged_at >= cooldown_start)
         )
     ).first()
-    
-    if active_alert:
+
+    if existing:
         return None  # Duplicate prevented
     
     # Create new alert
